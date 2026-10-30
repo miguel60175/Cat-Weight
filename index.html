@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>貓咪健康與作息監控儀表板</title>
+    <!-- 引入 Paho MQTT 庫 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <!-- 引入 Chart.js 圖表庫 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --accent-color: #00c853;
+            --text-color: #ffffff;
+            --text-sub: #aaaaaa;
+            --border-color: #333333;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+
+        h1 { margin: 0; font-size: 24px; font-weight: 400; }
+
+        /* 狀態指示燈 */
+        .status-badge {
+            padding: 6px 14px;
+            border-radius: 20px;
+            background: var(--card-bg);
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .dot {
+            height: 10px;
+            width: 10px;
+            background-color: #ff4444; /* 預設斷線 */
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        /* 數據卡片區塊 */
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+        .card-title { color: var(--text-sub); font-size: 14px; margin-bottom: 8px; }
+        .card-value { font-size: 32px; font-weight: bold; color: var(--accent-color); }
+        .card-sub { font-size: 12px; color: var(--text-sub); margin-top: 5px; }
+
+        /* 圖表區塊 */
+        .chart-container {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 25px;
+        }
+
+        /* 控制與測試區 */
+        .control-panel {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: center;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.8; }
+        .btn-primary { background-color: #29b6f6; color: black; }
+        .btn-danger { background-color: #ff5252; color: white; }
+        .btn-test { background-color: #ab47bc; color: white; }
+
+        input[type="number"] {
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: #2a2a2a;
+            color: white;
+            width: 100px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>🐱 貓咪健康監控儀表板</h1>
+        <div class="status-badge">
+            <span class="dot" id="status-dot"></span>
+            <span id="status-text">連線中...</span>
+        </div>
+    </header>
+
+    <!-- 即時指標卡片 -->
+    <div class="cards-grid">
+        <div class="card">
+            <div class="card-title">最新測量體重</div>
+            <div class="card-value" id="val-weight">-- <span style="font-size:18px;">kg</span></div>
+            <div class="card-sub" id="val-weight-time">等待數據中...</div>
+        </div>
+        <div class="card">
+            <div class="card-title">今日到訪次數</div>
+            <div class="card-value" id="val-visits">0 <span style="font-size:18px;">次</span></div>
+            <div class="card-sub" id="val-duration">累積停留: 0 秒</div>
+        </div>
+        <div class="card">
+            <div class="card-title">上次換水/清理時間</div>
+            <div class="card-value" id="val-water-status" style="font-size: 20px; color: #29b6f6;">未紀錄</div>
+            <div class="card-sub" id="val-water-time">--</div>
+        </div>
+    </div>
+
+    <!-- 體重長期趨勢圖 -->
+    <div class="chart-container">
+        <h3>📈 近 7 日體重趨勢 (kg)</h3>
+        <canvas id="weightChart"></canvas>
+    </div>
+
+    <!-- 控制與模擬數據測試區 -->
+    <div class="control-panel">
+        <div>
+            <button class="btn-primary" onclick="sendControl('TARE')">遠端去皮/歸零 (Tare)</button>
+        </div>
+        <div style="border-left: 1px solid var(--border-color); padding-left: 15px;">
+            <span>輸入醫院精準體重: </span>
+            <input type="number" id="hospital-weight" step="0.01" placeholder="4.20">
+            <button class="btn-primary" onclick="addHospitalData()">紀錄標籤</button>
+        </div>
+        <div style="border-left: 1px solid var(--border-color); padding-left: 15px;">
+            <button class="btn-test" onclick="simulateCatVisit()">🧪 模擬貓咪踩踏 (測試)</button>
+            <button class="btn-test" onclick="simulateWaterRefresh()">🧪 模擬腳踩換水 (測試)</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- MQTT 設定 ---
+    const broker = "broker.emqx.io";
+    const port = 8084;
+    const topicData = "mycat/scale/data";       // ESP32 傳來的數據
+    const topicEvent = "mycat/scale/event";     // 換水等事件
+    const topicControl = "mycat/scale/control"; // 網頁發送的控制指令
+    const clientID = "web_cat_dash_" + Math.random().toString(16).substr(2, 8);
+
+    const client = new Paho.MQTT.Client(broker, port, clientID);
+
+    // 狀態變數
+    let todayVisits = 0;
+    let todayDuration = 0;
+
+    // --- 初始化 Chart.js ---
+    const ctx = document.getElementById('weightChart').getContext('2d');
+    const weightChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', '今日'],
+            datasets: [{
+                label: '每日平均體重 (kg)',
+                data: [4.18, 4.20, 4.19, 4.22, 4.21, 4.23, 4.25],
+                borderColor: '#00c853',
+                backgroundColor: 'rgba(0, 200, 83, 0.1)',
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: { min: 3.5, max: 5.0 }
+            }
+        }
+    });
+
+    // --- MQTT 回呼函式 ---
+    function onConnect() {
+        document.getElementById("status-dot").style.backgroundColor = "#00c853";
+        document.getElementById("status-text").innerText = "已連線至 MQTT";
+        console.log("MQTT Connected");
+        
+        // 訂閱主題
+        client.subscribe(topicData);
+        client.subscribe(topicEvent);
+    }
+
+    function onFail(err) {
+        document.getElementById("status-dot").style.backgroundColor = "#ff4444";
+        document.getElementById("status-text").innerText = "連線失敗";
+    }
+
+    client.onMessageArrived = function (message) {
+        console.log("收到訊息 [" + message.destinationName + "]: " + message.payloadString);
+        try {
+            const data = JSON.parse(message.payloadString);
+            
+            // 處理貓咪踩踏數據
+            if (data.type === "VISIT") {
+                updateVisitData(data.weight, data.duration);
+            } 
+            // 處理換水事件
+            else if (data.type === "WATER_REFRESH") {
+                updateWaterData();
+            }
+        } catch (e) {
+            console.error("JSON 解析錯誤:", e);
+        }
+    };
+
+    // 執行 MQTT 連線
+    client.connect({
+        useSSL: true,
+        onSuccess: onConnect,
+        onFailure: onFail
+    });
+
+    // --- UI 更新邏輯 ---
+    function updateVisitData(weight, duration) {
+        const now = new Date().toLocaleTimeString();
+        document.getElementById("val-weight").innerHTML = weight.toFixed(2) + ' <span style="font-size:18px;">kg</span>';
+        document.getElementById("val-weight-time").innerText = "上次紀錄: " + now;
+
+        todayVisits += 1;
+        todayDuration += duration;
+        document.getElementById("val-visits").innerHTML = todayVisits + ' <span style="font-size:18px;">次</span>';
+        document.getElementById("val-duration").innerText = "累積停留: " + todayDuration + " 秒";
+
+        // 更新圖表最後一個點
+        weightChart.data.datasets[0].data[6] = weight;
+        weightChart.update();
+    }
+
+    function updateWaterData() {
+        const now = new Date().toLocaleTimeString();
+        document.getElementById("val-water-status").innerText = "今日已更換 🟢";
+        document.getElementById("val-water-time").innerText = "更換時間: " + now;
+    }
+
+    function sendControl(cmd) {
+        if (client.isConnected()) {
+            const msg = new Paho.MQTT.Message(JSON.stringify({ command: cmd }));
+            msg.destinationName = topicControl;
+            client.send(msg);
+            alert("已發送控制指令: " + cmd);
+        } else {
+            alert("MQTT 未連線！");
+        }
+    }
+
+    // --- 測試用模擬按鈕功能 ---
+    function simulateCatVisit() {
+        const randomWeight = (4.2 + Math.random() * 0.1).toFixed(2);
+        const randomDuration = Math.floor(20 + Math.random() * 30);
+        updateVisitData(parseFloat(randomWeight), randomDuration);
+    }
+
+    function simulateWaterRefresh() {
+        updateWaterData();
+    }
+
+    function addHospitalData() {
+        const val = document.getElementById("hospital-weight").value;
+        if(val) {
+            alert("已記錄醫院數據: " + val + " kg (可後續擴充同步至 Google Sheets)");
+        }
+    }
+</script>
+
+</body>
+</html>
